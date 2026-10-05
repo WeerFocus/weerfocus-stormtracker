@@ -1,0 +1,14 @@
+# Geheimen (nooit in git)
+.env
+*.env
+
+# Python
+venv/
+__pycache__/
+*.pyc
+
+# Toestand en runtime-bestanden (historie, id-register, orografie)
+toestand/
+*.log
+*.bak
+*.bak*

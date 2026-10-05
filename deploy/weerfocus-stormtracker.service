@@ -1,0 +1,21 @@
+[Unit]
+Description=Weerfocus Stormtracker (GFS/IFS MSLP -> depressietracks -> Bunny CDN)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/root/weerfocus-stormtracker
+EnvironmentFile=/root/weerfocus-stormtracker/.env
+ExecStart=/root/weerfocus-stormtracker/venv/bin/python -m storm_tracker.worker
+Restart=always
+RestartSec=30
+
+# Bescherm Radar & Modellen tegen CPU/RAM-claims (gemeten: ~70 MB, ~30 s rekenen per run)
+Nice=10
+MemoryMax=512M
+CPUQuota=50%
+
+[Install]
+WantedBy=multi-user.target
