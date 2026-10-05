@@ -4,6 +4,7 @@
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 
+from storm_tracker import benelux
 from storm_tracker import instellingen as cfg
 from storm_tracker.tracker import Track, afstand_km
 
@@ -92,6 +93,7 @@ def bouw_tracks_geojson(tracks: list[Track], historie: dict, run: datetime, mode
                     "pressure_hpa": round(p.druk_hpa, 1),
                     "deepening_24h": p.verdieping_24h,
                     "speed_kmh": p.snelheid_kmh,
+                    "benelux_km": round(benelux.afstand_km(p.lat, p.lon)),
                 },
             })
     return {"type": "FeatureCollection", "model": model, "run": run_code(run), "features": features}
@@ -103,23 +105,23 @@ def bouw_tracks_geojson(tracks: list[Track], historie: dict, run: datetime, mode
 def _kenmerken(tracks: list[Track]) -> dict:
     punten = [p for t in tracks for p in t.punten]
     laagste = min(punten, key=lambda p: p.druk_hpa)
-    afstanden = [(afstand_km(p.lat, p.lon, cfg.NL_ZWAARTEPUNT_LAT, cfg.NL_ZWAARTEPUNT_LON), p) for p in punten]
-    dichtst_km, dichtst = min(afstanden, key=lambda a: a[0])
+    afstanden = [(benelux.afstand_km(p.lat, p.lon), p) for p in punten]
+    dichtst_km, dichtst = min(afstanden, key=lambda a: (a[0], a[1].tijd))
     verdiepingen = [p.verdieping_24h for p in punten if p.verdieping_24h is not None]
     return {
         "min_pressure_hpa": round(laagste.druk_hpa, 1),
         "min_pressure_time": iso(laagste.tijd),
-        "closest_nl_km": round(dichtst_km),
-        "closest_nl_time": iso(dichtst.tijd),
+        "closest_benelux_km": round(dichtst_km),
+        "closest_benelux_time": iso(dichtst.tijd),
         "max_deepening_24h_hpa": round(max(verdiepingen), 1) if verdiepingen else None,
-        "relevant_nl": dichtst_km <= cfg.NL_STRAAL_KM,
+        "relevant_benelux": dichtst_km <= cfg.BENELUX_STRAAL_KM,
     }
 
 
 def bouw_summary(per_model: dict[str, list[Track]], register: dict, run: datetime) -> dict:
     """
     Eén regel per storm. De kernvelden gaan over alle modellen samen (laagste druk,
-    dichtste nadering); `per_model` bevat dezelfde velden per model.
+    dichtste nadering tot de Benelux); `per_model` bevat dezelfde velden per model.
     """
     ids = sorted({t.storm_id for tracks in per_model.values() for t in tracks})
     stormen = []
@@ -136,8 +138,8 @@ def bouw_summary(per_model: dict[str, list[Track]], register: dict, run: datetim
             "per_model": {m: _kenmerken(ts) for m, ts in tracks_per_model.items()},
         }
         stormen.append(regel)
-    stormen.sort(key=lambda s: (not s["relevant_nl"], s["closest_nl_km"]))
-    return {"run": run_code(run), "nl_radius_km": cfg.NL_STRAAL_KM, "storms": stormen}
+    stormen.sort(key=lambda s: (not s["relevant_benelux"], s["closest_benelux_km"]))
+    return {"run": run_code(run), "benelux_radius_km": cfg.BENELUX_STRAAL_KM, "storms": stormen}
 
 
 def werk_register_bij(register: dict, tracks: list[Track], run: datetime) -> None:
@@ -156,7 +158,16 @@ def snoei_register(register: dict, nu: datetime) -> None:
         del register[sid]
 
 
-def bouw_manifest(runs: dict[str, datetime], publicatie: str, nu: datetime) -> dict:
+def bouw_benelux(straal_km: float) -> dict:
+    """Zone binnen `straal_km` van de Benelux (Polygon), voor de kaart."""
+    return {"type": "FeatureCollection", "features": [{
+        "type": "Feature",
+        "geometry": {"type": "Polygon", "coordinates": [benelux.zone_ring(straal_km)]},
+        "properties": {"kind": "zone", "radius_km": straal_km},
+    }]}
+
+
+def bouw_manifest(runs: dict[str, datetime], publicatie: str, map_publicatie: str, nu: datetime) -> dict:
     modellen = []
     for m in ("gfs", "ifs"):
         if m in runs:
@@ -165,6 +176,8 @@ def bouw_manifest(runs: dict[str, datetime], publicatie: str, nu: datetime) -> d
                 "id": m,
                 "naam": bron["naam"],
                 "run": run_code(runs[m]),
+                # Isobaren per stap: {isobaren}/{lead_h:03d}.json, relatief aan synoptiek/storms/
+                "isobaren": f"runs/{map_publicatie}/{m}/isobaren",
                 "bron": bron["bron"],
                 "licentie": bron["licentie"],
                 **({"attributie": bron["attributie"]} if "attributie" in bron else {}),

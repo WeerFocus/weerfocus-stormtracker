@@ -13,10 +13,11 @@ Starten:   venv/bin/python -m storm_tracker.worker
 Eén ronde: python -m storm_tracker.worker --eenmalig
 Vaste run: python -m storm_tracker.worker --eenmalig --gfs-run 2026100500 --ifs-run 2026100500
 Proefrun:  python -m storm_tracker.worker --eenmalig --droog
-           (uploadt niets; bestanden in toestand/droog/cdn/, eigen toestand in toestand/droog/)
+           (uploadt niets; bestanden in toestand/droog/cdn/{latest,runs}/, eigen toestand in toestand/droog/)
 """
 
 import argparse
+import concurrent.futures
 import gc
 import json
 import logging
@@ -29,7 +30,7 @@ from typing import Optional
 
 import numpy as np
 
-from storm_tracker import bronnen, bunny, uitvoer
+from storm_tracker import bronnen, bunny, isobaren, uitvoer
 from storm_tracker import instellingen as cfg
 from storm_tracker.tracker import (
     Track,
@@ -43,6 +44,9 @@ from storm_tracker.tracker import (
 )
 
 log = logging.getLogger("stormtracker")
+
+# Verhogen bij een andere vorm van de uitvoer: dan wordt de huidige run opnieuw gepubliceerd
+UITVOER_VERSIE = 2
 
 TRACKER_INSTELLINGEN = TrackerInstellingen(
     glad_sigma_punten=cfg.GLAD_SIGMA_PUNTEN,
@@ -91,8 +95,9 @@ class StormWorker:
         self.pad_historie = self.map / "history.json"
         self.pad_orografie = self.map / "orografie.npz"
         self.orografie: Optional[bronnen.Orografie] = None
-        # Ruwe tracks (zonder id) per model en run, zodat een nieuwe IFS-run de GFS-run niet opnieuw laat downloaden
-        self.cache: dict[str, tuple[datetime, list[Track]]] = {}
+        # Ruwe tracks (zonder id) en isobaren per model en run, zodat een nieuwe IFS-run de GFS-run
+        # niet opnieuw laat downloaden
+        self.cache: dict[str, tuple[datetime, list[Track], dict[int, dict]]] = {}
 
     # -- orografie (statisch; één keer ophalen en lokaal bewaren) ------------
     def _laad_orografie(self, gfs_run: Optional[datetime]) -> bronnen.Orografie:
@@ -111,27 +116,29 @@ class StormWorker:
         return oro
 
     # -- één model verwerken --------------------------------------------------
-    def _volg_model(self, model: str, run: datetime) -> list[Track]:
+    def _volg_model(self, model: str, run: datetime) -> tuple[list[Track], dict[int, dict]]:
         gecached = self.cache.get(model)
         if gecached and gecached[0] == run:
-            return [kopie(t) for t in gecached[1]]
+            return [kopie(t) for t in gecached[1]], gecached[2]
 
         haal = bronnen.MODELLEN[model]["haal_mslp"]
         stappen = []
+        isobaren_per_stap: dict[int, dict] = {}
         start = time.monotonic()
         for stap in cfg.STAPPEN_H:
             veld, lats, lons = haal(run, stap)
             # Meteen naar minima: het veld zelf is daarna niet meer nodig
             minima = zoek_minima(veld, lats, lons, TRACKER_INSTELLINGEN, self.orografie)
             stappen.append((run + timedelta(hours=stap), stap, minima))
+            isobaren_per_stap[stap] = isobaren.bouw_isobaren(veld, lats, lons)
             del veld
         tracks = filter_tracks(koppel_minima(stappen, TRACKER_INSTELLINGEN), TRACKER_INSTELLINGEN)
         for t in tracks:
             t.model = model
         log.info(f"{model.upper()} {uitvoer.run_code(run)}: {len(tracks)} depressies gevolgd "
                  f"({sum(len(s[2]) for s in stappen)} minima in {len(stappen)} stappen, {time.monotonic() - start:.0f} s)")
-        self.cache[model] = (run, tracks)
-        return [kopie(t) for t in tracks]
+        self.cache[model] = (run, tracks, isobaren_per_stap)
+        return [kopie(t) for t in tracks], isobaren_per_stap
 
     # -- één ronde --------------------------------------------------------------
     def ronde(self) -> None:
@@ -155,13 +162,15 @@ class StormWorker:
             return
 
         sleutel = "|".join(f"{m}:{uitvoer.run_code(r)}" for m, r in sorted(runs.items()))
-        if sleutel == toestand.get("laatste_sleutel"):
+        if sleutel == toestand.get("laatste_sleutel") and toestand.get("uitvoer_versie") == UITVOER_VERSIE:
             log.info(f"Niets nieuws ({sleutel})")
             return
         log.info(f"Verwerken: {sleutel}")
 
         self._laad_orografie(runs.get("gfs"))
-        per_model = {m: self._volg_model(m, r) for m, r in sorted(runs.items())}
+        per_model, isobaren_per_model = {}, {}
+        for m, r in sorted(runs.items()):
+            per_model[m], isobaren_per_model[m] = self._volg_model(m, r)
         nu = datetime.now(timezone.utc)
         publicatie = uitvoer.run_code(max(runs.values()))
 
@@ -202,14 +211,21 @@ class StormWorker:
         bestanden = {f"{m}/tracks.json": uitvoer.bouw_tracks_geojson(ts, historie, runs[m], m) for m, ts in per_model.items()}
         bestanden["summary.json"] = uitvoer.bouw_summary(per_model, register, max(runs.values()))
         bestanden["history.json"] = historie
+        bestanden["benelux.json"] = uitvoer.bouw_benelux(cfg.BENELUX_STRAAL_KM)
         # De frontend herkent een nieuwe publicatie aan manifest.run; een nieuwe IFS-run bij
         # dezelfde GFS-run telt ook als nieuw, vandaar de volledige sleutel.
-        bestanden["manifest.json"] = uitvoer.bouw_manifest(runs, sleutel_naar_run(sleutel, publicatie), nu)
+        bestanden["manifest.json"] = uitvoer.bouw_manifest(runs, sleutel_naar_run(sleutel, publicatie), publicatie, nu)
+        # Isobaren alleen onder runs/ (groot, per run onveranderlijk); het manifest wijst ernaar
+        isobaar_bestanden = {
+            f"{cfg.CDN_MAP_RUNS}/{publicatie}/{m}/isobaren/{stap:03d}.json": fc
+            for m, per_stap in isobaren_per_model.items() for stap, fc in per_stap.items()
+        }
 
-        self._publiceer(publicatie, bestanden)
+        self._publiceer(publicatie, bestanden, isobaar_bestanden)
 
         toestand.update({
             "laatste_sleutel": sleutel,
+            "uitvoer_versie": UITVOER_VERSIE,
             "runs": {m: uitvoer.run_code(r) for m, r in runs.items()},
             "vorige_tracks": uitvoer.tracks_naar_toestand(alle_tracks),
             "bijgewerkt": uitvoer.iso(nu),
@@ -217,29 +233,39 @@ class StormWorker:
         _schrijf_json(self.pad_register, register)
         _schrijf_json(self.pad_historie, historie)
         _schrijf_json(self.pad_toestand, toestand)
-        relevant = sum(1 for s in bestanden["summary.json"]["storms"] if s["relevant_nl"])
-        log.info(f"{'Proefrun' if self.droog else 'Gepubliceerd'} {publicatie}: {len(bestanden['summary.json']['storms'])} stormen, {relevant} binnen {cfg.NL_STRAAL_KM:.0f} km van Nederland")
+        relevant = sum(1 for s in bestanden["summary.json"]["storms"] if s["relevant_benelux"])
+        log.info(f"{'Proefrun' if self.droog else 'Gepubliceerd'} {publicatie}: {len(bestanden['summary.json']['storms'])} stormen, "
+                 f"{relevant} binnen {cfg.BENELUX_STRAAL_KM:.0f} km van de Benelux, {len(isobaar_bestanden)} isobarenbestanden")
 
         if not self.droog:
             self._ruim_runs_op(nu)
 
     # -- publiceren -----------------------------------------------------------
-    def _publiceer(self, publicatie: str, bestanden: dict[str, dict]) -> None:
+    def _publiceer(self, publicatie: str, bestanden: dict[str, dict], isobaar_bestanden: dict[str, dict]) -> None:
         # Manifest steeds als laatste: pas als alles er staat, ziet de frontend de nieuwe run
         volgorde = [n for n in bestanden if n != "manifest.json"] + ["manifest.json"]
         if self.droog:
             doel = self.map / "cdn"
+            for pad_cdn, data in isobaar_bestanden.items():
+                pad = doel / pad_cdn.removeprefix("synoptiek/storms/")
+                pad.parent.mkdir(parents=True, exist_ok=True)
+                with open(pad, "w", encoding="utf-8") as f:
+                    json.dump(data, f, ensure_ascii=False, separators=(",", ":"))
             for naam in volgorde:
-                pad = doel / naam
+                pad = doel / "latest" / naam
                 pad.parent.mkdir(parents=True, exist_ok=True)
                 with open(pad, "w", encoding="utf-8") as f:
                     json.dump(bestanden[naam], f, ensure_ascii=False, indent=1)
             log.info(f"Proefrun: bestanden staan in {doel}, er is niets geüpload")
             return
+        # Eerst de isobaren (parallel; een mislukte upload breekt de publicatie af)
+        with concurrent.futures.ThreadPoolExecutor(max_workers=8) as pool:
+            list(pool.map(lambda kv: bunny.upload_json(*kv), isobaar_bestanden.items()))
         for naam in volgorde:
             bunny.upload_json(f"{cfg.CDN_MAP_RUNS}/{publicatie}/{naam}", bestanden[naam])
         for naam in volgorde:
             bunny.upload_json(f"{cfg.CDN_MAP_LATEST}/{naam}", bestanden[naam])
+        bunny.purge([f"{cfg.CDN_MAP_LATEST}/{naam}" for naam in volgorde])
 
     def _ruim_runs_op(self, nu: datetime) -> None:
         grens = uitvoer.run_code(nu - timedelta(days=cfg.BEWAARDAGEN))

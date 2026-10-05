@@ -51,8 +51,9 @@ synoptiek/storms/latest/gfs/tracks.json
 synoptiek/storms/latest/ifs/tracks.json
 synoptiek/storms/runs/{JJJJMMDDUU}/…      # zelfde bestanden, 7 dagen bewaard
 ```
-`synoptiek/latest/` (de oude analyse) wordt niet aangeraakt. Volgorde van publiceren: eerst alles
-naar `runs/{run}/`, dan naar `latest/`, met `manifest.json` steeds als laatste. Mislukt één
+`synoptiek/latest/` (de oude analyse) wordt niet aangeraakt. Volgorde van publiceren: eerst de
+isobaren en alles naar `runs/{run}/`, dan naar `latest/`, met `manifest.json` steeds als laatste;
+daarna wordt de edge-cache van `latest/` gepurged. Mislukt één
 upload, dan stopt de publicatie en volgt de volgende ronde opnieuw.
 
 **manifest.json**
@@ -100,7 +101,10 @@ Verplicht:
 STORM_BUNNY_SLEUTEL=<wachtwoord van de opslagzone achter weerfocus-synoptiek.b-cdn.net>
 STORM_BUNNY_OPSLAGZONE=weerfocus-synoptiek    # naam van die opslagzone
 STORM_BUNNY_REGIO=storage                     # storage/de = storage.bunnycdn.com; anders bv. uk, ny
+STORM_BUNNY_API_SLEUTEL=<account-API-sleutel>  # om na elke publicatie de cache van latest/ te purgen
 ```
+De pull zone neemt de querystring niet mee in de cachesleutel; zonder purge zien bezoekers een
+nieuwe publicatie pas als de edge-cache verloopt.
 Optioneel (standaard tussen haakjes): `STORM_NL_STRAAL_KM` (500), `STORM_ID_STRAAL_KM` (300),
 `STORM_MAX_SPRONG_KM` (650), `STORM_MIN_DUUR_H` (24), `STORM_MIN_DIEPTE_HPA` (2),
 `STORM_MAX_KERNDRUK_HPA` (1005), `STORM_OROGRAFIE_MAX_M` (1000), `STORM_CONTROLE_INTERVAL_S` (600),

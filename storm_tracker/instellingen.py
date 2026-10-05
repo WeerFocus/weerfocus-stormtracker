@@ -26,6 +26,9 @@ BASIS_MAP = Path(__file__).resolve().parent.parent
 BUNNY_OPSLAGZONE = _tekst("STORM_BUNNY_OPSLAGZONE", "weerfocus-synoptiek")
 BUNNY_REGIO = _tekst("STORM_BUNNY_REGIO", "de").lower()
 BUNNY_SLEUTEL = _tekst("STORM_BUNNY_SLEUTEL")  # wachtwoord van de opslagzone, alleen via .env
+# Account-API-sleutel, alleen om de edge-cache van latest/ te purgen (de pull zone negeert ?t=)
+BUNNY_API_SLEUTEL = _tekst("STORM_BUNNY_API_SLEUTEL")
+PULLZONE_URL = _tekst("STORM_PULLZONE_URL", "https://weerfocus-synoptiek.b-cdn.net").rstrip("/")
 
 if not BUNNY_REGIO or BUNNY_REGIO in ("de", "falkenstein", "main", "default", "storage"):
     BUNNY_HOST = "storage.bunnycdn.com"
@@ -71,10 +74,9 @@ DOMEIN = {
     "lon_max": 40.0,
 }
 
-# Zwaartepunt van Nederland (lon, lat) voor de afstand tot Nederland
-NL_ZWAARTEPUNT_LON = _getal("STORM_NL_LON", 5.29)
-NL_ZWAARTEPUNT_LAT = _getal("STORM_NL_LAT", 52.13)
-NL_STRAAL_KM = _getal("STORM_NL_STRAAL_KM", 500)
+# Afstand tot de Benelux: kortste afstand tot de landsgrenzen van NL, BE en LU (benelux.geojson).
+# Komt een depressie binnen deze straal, dan is hij relevant voor de Benelux.
+BENELUX_STRAAL_KM = _getal("STORM_BENELUX_STRAAL_KM", 500)
 
 # ---------------------------------------------------------------------------
 # Tracking

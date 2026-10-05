@@ -107,6 +107,14 @@ def _index_dichtstbij(waarden: np.ndarray, x: float) -> Optional[int]:
     return int(np.abs(waarden - x).argmin())
 
 
+def _parabooltop(links: float, midden: float, rechts: float) -> float:
+    """Verschuiving (in roosterstappen, -0,5..0,5) van de top van de parabool door drie punten."""
+    noemer = float(links) - 2.0 * float(midden) + float(rechts)
+    if noemer <= 0:
+        return 0.0
+    return max(-0.5, min(0.5, 0.5 * (float(links) - float(rechts)) / noemer))
+
+
 def zoek_minima(
     mslp_hpa: np.ndarray,
     lats: np.ndarray,
@@ -150,6 +158,11 @@ def zoek_minima(
         bj, bi = np.unravel_index(int(np.argmin(blok)), blok.shape)
         kj, ki = j0 + bj, i0 + bi
         klat, klon = float(lats[kj]), float(lons[ki])
+        # Positie tussen de roosterpunten: top van een parabool door de buren (anders trapjes van 0,25°)
+        if 0 < kj < ny - 1:
+            klat += _parabooltop(mslp_hpa[kj - 1, ki], mslp_hpa[kj, ki], mslp_hpa[kj + 1, ki]) * float(lats[1] - lats[0])
+        if 0 < ki < nx - 1:
+            klon += _parabooltop(mslp_hpa[kj, ki - 1], mslp_hpa[kj, ki], mslp_hpa[kj, ki + 1]) * float(lons[1] - lons[0])
 
         if orografie is not None:
             hoogte = orografie(klat, klon)

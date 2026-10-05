@@ -49,3 +49,21 @@ def verwijder_map(pad: str) -> None:
     resp = requests.delete(_url(pad.rstrip("/") + "/"), headers={"AccessKey": cfg.BUNNY_SLEUTEL}, timeout=60)
     if resp.status_code not in (200, 404):
         raise Uploadfout(f"Verwijderen van {pad} mislukt: HTTP {resp.status_code}")
+
+
+def purge(paden: list[str]) -> None:
+    """
+    Leegt de edge-cache van de pull zone voor deze paden, zodat bezoekers meteen de nieuwe
+    publicatie zien. Zonder account-API-sleutel alleen een waarschuwing.
+    """
+    if not cfg.BUNNY_API_SLEUTEL:
+        log.warning("STORM_BUNNY_API_SLEUTEL ontbreekt: de cache van latest/ wordt niet gepurged")
+        return
+    for pad in paden:
+        url = f"{cfg.PULLZONE_URL}/{pad.lstrip('/')}"
+        try:
+            resp = requests.get("https://api.bunny.net/purge", params={"url": url, "async": "false"},
+                                headers={"AccessKey": cfg.BUNNY_API_SLEUTEL}, timeout=20)
+            resp.raise_for_status()
+        except requests.RequestException as e:
+            log.warning(f"Purgen van {url} mislukt: {e}")
