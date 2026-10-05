@@ -39,6 +39,9 @@ BUNNY_BASIS_URL = f"https://{BUNNY_HOST}/{BUNNY_OPSLAGZONE}"
 # Paden op de CDN; synoptiek/latest/ (de oude analyse) blijft onaangeroerd
 CDN_MAP_LATEST = "synoptiek/storms/latest"
 CDN_MAP_RUNS = "synoptiek/storms/runs"
+# Isobaren per model en modelrun: isobaren/v{versie}/{model}/{JJJJMMDDUU}/{lead:03d}.json.
+# Onveranderlijke paden, want de pull zone negeert de querystring en alleen latest/ wordt gepurged.
+CDN_MAP_ISOBAREN = "synoptiek/storms/isobaren"
 
 # ---------------------------------------------------------------------------
 # Bronnen
@@ -73,6 +76,18 @@ DOMEIN = {
     "lon_min": -70.0,
     "lon_max": 40.0,
 }
+
+# Domein van de isobaren: ruimer dan het trackingdomein, zodat de kaart nergens een rand toont.
+# De kaart is tot dit gebied begrensd (maxBounds in synoptiek.js); wijzig je het, wijzig dan beide.
+ISOBAREN_DOMEIN = {
+    "lat_min": 15.0,
+    "lat_max": 85.0,
+    "lon_min": -100.0,
+    "lon_max": 80.0,
+}
+# Boven hoger terrein geen isobaren: de naar zeeniveau herleide druk is daar een rekenartefact
+# (bijv. dichte kringen boven het ijs van Groenland)
+ISOBAREN_OROGRAFIE_MAX_M = _getal("STORM_ISOBAREN_OROGRAFIE_MAX_M", 1500)
 
 # Afstand tot de Benelux: kortste afstand tot de landsgrenzen van NL, BE en LU (benelux.geojson).
 # Komt een depressie binnen deze straal, dan is hij relevant voor de Benelux.

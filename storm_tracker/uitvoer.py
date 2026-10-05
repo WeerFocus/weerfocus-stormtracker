@@ -167,7 +167,7 @@ def bouw_benelux(straal_km: float) -> dict:
     }]}
 
 
-def bouw_manifest(runs: dict[str, datetime], publicatie: str, map_publicatie: str, nu: datetime) -> dict:
+def bouw_manifest(runs: dict[str, datetime], publicatie: str, isobaren_paden: dict[str, str], nu: datetime) -> dict:
     modellen = []
     for m in ("gfs", "ifs"):
         if m in runs:
@@ -177,7 +177,7 @@ def bouw_manifest(runs: dict[str, datetime], publicatie: str, map_publicatie: st
                 "naam": bron["naam"],
                 "run": run_code(runs[m]),
                 # Isobaren per stap: {isobaren}/{lead_h:03d}.json, relatief aan synoptiek/storms/
-                "isobaren": f"runs/{map_publicatie}/{m}/isobaren",
+                "isobaren": isobaren_paden[m],
                 "bron": bron["bron"],
                 "licentie": bron["licentie"],
                 **({"attributie": bron["attributie"]} if "attributie" in bron else {}),

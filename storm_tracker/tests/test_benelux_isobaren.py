@@ -57,5 +57,21 @@ class TestIsobaren(unittest.TestCase):
         self.assertTrue(all(n % 4 == 0 for n in niveaus))
 
 
+    def test_masker_haalt_isobaren_weg(self):
+        try:
+            import contourpy  # noqa: F401
+        except ImportError:
+            self.skipTest("contourpy niet geïnstalleerd")
+        from storm_tracker.isobaren import bouw_isobaren
+        lats = np.arange(30.0, 75.01, 0.25)
+        lons = np.arange(-70.0, 40.01, 0.25)
+        lon2d, lat2d = np.meshgrid(lons, lats)
+        # Diepe put links, het rechterdeel van het domein gemaskeerd (zoals hoog terrein)
+        veld = 1016 - 30 * np.exp(-(((lon2d + 40) * 0.6) ** 2 + (lat2d - 55) ** 2) / (2 * 4.0 ** 2)) + 0.2 * lon2d
+        masker = lon2d > 0
+        for f in bouw_isobaren(veld, lats, lons, masker)["features"]:
+            self.assertTrue(all(lon <= 0.3 for lon, _ in f["geometry"]["coordinates"]))
+
+
 if __name__ == "__main__":
     unittest.main()

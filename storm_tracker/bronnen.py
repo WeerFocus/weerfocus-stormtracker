@@ -85,10 +85,11 @@ def decodeer_grib(bericht: bytes) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     return waarden, lats, lons
 
 
-def snijd_uit(waarden: np.ndarray, lats: np.ndarray, lons: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """Snijdt het domein uit, met oplopende lats en lons in -180..180."""
+def snijd_uit(waarden: np.ndarray, lats: np.ndarray, lons: np.ndarray,
+              domein: Optional[dict] = None) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Snijdt een domein uit (standaard het trackingdomein), met oplopende lats en lons in -180..180."""
     lons_180 = (lons + 180.0) % 360.0 - 180.0
-    d = cfg.DOMEIN
+    d = domein or cfg.DOMEIN
     ji = np.where((lats >= d["lat_min"] - 1e-6) & (lats <= d["lat_max"] + 1e-6))[0]
     ii = np.where((lons_180 >= d["lon_min"] - 1e-6) & (lons_180 <= d["lon_max"] + 1e-6))[0]
     ji = ji[np.argsort(lats[ji])]
@@ -104,6 +105,16 @@ class Orografie:
 
     def __init__(self, hoogte: np.ndarray, lats: np.ndarray, lons: np.ndarray):
         self.hoogte, self.lats, self.lons = hoogte, lats, lons
+
+    def dekt(self, domein: dict) -> bool:
+        return (self.lats[0] <= domein["lat_min"] + 0.01 and self.lats[-1] >= domein["lat_max"] - 0.01
+                and self.lons[0] <= domein["lon_min"] + 0.01 and self.lons[-1] >= domein["lon_max"] - 0.01)
+
+    def op_rooster(self, lats: np.ndarray, lons: np.ndarray) -> np.ndarray:
+        """Terreinhoogte op een (oplopend) lat/lon-rooster, dichtstbijzijnde punt."""
+        jj = np.clip(np.searchsorted(self.lats, lats), 0, len(self.lats) - 1)
+        ii = np.clip(np.searchsorted(self.lons, lons), 0, len(self.lons) - 1)
+        return self.hoogte[np.ix_(jj, ii)]
 
     def __call__(self, lat: float, lon: float) -> Optional[float]:
         if not (self.lats[0] <= lat <= self.lats[-1] and self.lons[0] <= lon <= self.lons[-1]):
@@ -143,16 +154,17 @@ def gfs_run_compleet(run: datetime) -> bool:
 
 
 def haal_gfs_mslp(run: datetime, stap: int) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Het hele MSLP-veld (hPa); de worker snijdt er het tracking- en het isobarendomein uit."""
     start, eind = _gfs_bereik(run, stap, "PRMSL", "mean sea level")
     waarden, lats, lons = decodeer_grib(_haal_bytes(_gfs_url(run, stap), start, eind))
-    uit, lats, lons = snijd_uit(waarden, lats, lons)
-    return uit / 100.0, lats, lons  # Pa → hPa
+    return waarden / 100.0, lats, lons  # Pa → hPa
 
 
 def haal_gfs_orografie(run: datetime) -> Orografie:
     start, eind = _gfs_bereik(run, 0, "HGT", "surface")
     waarden, lats, lons = decodeer_grib(_haal_bytes(_gfs_url(run, 0), start, eind))
-    return Orografie(*snijd_uit(waarden, lats, lons))
+    # Isobarendomein: omvat het trackingdomein
+    return Orografie(*snijd_uit(waarden, lats, lons, cfg.ISOBAREN_DOMEIN))
 
 
 # ---------------------------------------------------------------------------
@@ -182,8 +194,7 @@ def haal_ifs_mslp(run: datetime, stap: int) -> tuple[np.ndarray, np.ndarray, np.
         if item.get("param") == "msl":
             start = int(item["_offset"])
             waarden, lats, lons = decodeer_grib(_haal_bytes(url + ".grib2", start, start + int(item["_length"]) - 1))
-            uit, lats, lons = snijd_uit(waarden, lats, lons)
-            return uit / 100.0, lats, lons
+            return waarden / 100.0, lats, lons  # het hele veld
     raise Bronfout(f"msl niet in {url}.index")
 
 

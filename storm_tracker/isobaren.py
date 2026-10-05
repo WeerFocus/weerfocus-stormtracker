@@ -1,6 +1,8 @@
 # storm_tracker/isobaren.py
 """Isobaren (MSLP-contouren) per tijdstap als compacte GeoJSON, voor de achtergrond van de kaart."""
 
+from typing import Optional
+
 import numpy as np
 from scipy import ndimage
 
@@ -37,11 +39,17 @@ def _vereenvoudig(punten: np.ndarray, tol: float) -> np.ndarray:
     return punten[houden]
 
 
-def bouw_isobaren(mslp_hpa: np.ndarray, lats: np.ndarray, lons: np.ndarray) -> dict:
+def bouw_isobaren(mslp_hpa: np.ndarray, lats: np.ndarray, lons: np.ndarray,
+                  masker: Optional[np.ndarray] = None) -> dict:
+    """
+    Isobaren elke INTERVAL_HPA. `masker` (zelfde vorm als het veld, True = weglaten) haalt
+    gebieden weg waar de herleide druk geen betekenis heeft, zoals hoog terrein.
+    """
     import contourpy
 
     glad = ndimage.gaussian_filter(mslp_hpa.astype(np.float64), sigma=GLAD_SIGMA_PUNTEN, mode="nearest")
-    gen = contourpy.contour_generator(lons, lats, glad, line_type=contourpy.LineType.Separate)
+    z = np.ma.array(glad, mask=masker) if masker is not None and masker.any() else glad
+    gen = contourpy.contour_generator(lons, lats, z, line_type=contourpy.LineType.Separate)
     laagste = int(np.floor(glad.min() / INTERVAL_HPA) * INTERVAL_HPA)
     hoogste = int(np.ceil(glad.max() / INTERVAL_HPA) * INTERVAL_HPA)
 

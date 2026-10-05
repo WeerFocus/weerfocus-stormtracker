@@ -46,7 +46,7 @@ from storm_tracker.tracker import (
 log = logging.getLogger("stormtracker")
 
 # Verhogen bij een andere vorm van de uitvoer: dan wordt de huidige run opnieuw gepubliceerd
-UITVOER_VERSIE = 2
+UITVOER_VERSIE = 4
 
 TRACKER_INSTELLINGEN = TrackerInstellingen(
     glad_sigma_punten=cfg.GLAD_SIGMA_PUNTEN,
@@ -95,6 +95,8 @@ class StormWorker:
         self.pad_historie = self.map / "history.json"
         self.pad_orografie = self.map / "orografie.npz"
         self.orografie: Optional[bronnen.Orografie] = None
+        # Isobaren die dit proces al heeft geüpload: (model, run); hun paden veranderen nooit
+        self.isobaren_geupload: set[tuple[str, str]] = set()
         # Ruwe tracks (zonder id) en isobaren per model en run, zodat een nieuwe IFS-run de GFS-run
         # niet opnieuw laat downloaden
         self.cache: dict[str, tuple[datetime, list[Track], dict[int, dict]]] = {}
@@ -105,8 +107,11 @@ class StormWorker:
             return self.orografie
         if self.pad_orografie.exists():
             with np.load(self.pad_orografie) as d:
-                self.orografie = bronnen.Orografie(d["hoogte"], d["lats"], d["lons"])
-            return self.orografie
+                oro = bronnen.Orografie(d["hoogte"], d["lats"], d["lons"])
+            # Een oudere versie bewaarde alleen het trackingdomein; dan opnieuw ophalen
+            if oro.dekt(cfg.ISOBAREN_DOMEIN):
+                self.orografie = oro
+                return oro
         if gfs_run is None:
             raise bronnen.Bronfout("Geen orografie: nog geen GFS-run beschikbaar om hem uit te halen")
         oro = bronnen.haal_gfs_orografie(gfs_run)
@@ -124,14 +129,19 @@ class StormWorker:
         haal = bronnen.MODELLEN[model]["haal_mslp"]
         stappen = []
         isobaren_per_stap: dict[int, dict] = {}
+        masker = None
         start = time.monotonic()
         for stap in cfg.STAPPEN_H:
-            veld, lats, lons = haal(run, stap)
-            # Meteen naar minima: het veld zelf is daarna niet meer nodig
+            wereld, wlats, wlons = haal(run, stap)
+            # Meteen naar minima en isobaren: de velden zelf zijn daarna niet meer nodig
+            veld, lats, lons = bronnen.snijd_uit(wereld, wlats, wlons)
             minima = zoek_minima(veld, lats, lons, TRACKER_INSTELLINGEN, self.orografie)
             stappen.append((run + timedelta(hours=stap), stap, minima))
-            isobaren_per_stap[stap] = isobaren.bouw_isobaren(veld, lats, lons)
-            del veld
+            iveld, ilats, ilons = bronnen.snijd_uit(wereld, wlats, wlons, cfg.ISOBAREN_DOMEIN)
+            if masker is None:
+                masker = self.orografie.op_rooster(ilats, ilons) > cfg.ISOBAREN_OROGRAFIE_MAX_M
+            isobaren_per_stap[stap] = isobaren.bouw_isobaren(iveld, ilats, ilons, masker)
+            del wereld, veld, iveld
         tracks = filter_tracks(koppel_minima(stappen, TRACKER_INSTELLINGEN), TRACKER_INSTELLINGEN)
         for t in tracks:
             t.model = model
@@ -214,14 +224,21 @@ class StormWorker:
         bestanden["benelux.json"] = uitvoer.bouw_benelux(cfg.BENELUX_STRAAL_KM)
         # De frontend herkent een nieuwe publicatie aan manifest.run; een nieuwe IFS-run bij
         # dezelfde GFS-run telt ook als nieuw, vandaar de volledige sleutel.
-        bestanden["manifest.json"] = uitvoer.bouw_manifest(runs, sleutel_naar_run(sleutel, publicatie), publicatie, nu)
-        # Isobaren alleen onder runs/ (groot, per run onveranderlijk); het manifest wijst ernaar
+        # Isobaren per model en modelrun op een vast pad; het manifest wijst ernaar
+        isobaren_mappen = {m: f"v{UITVOER_VERSIE}/{m}/{uitvoer.run_code(r)}" for m, r in runs.items()}
+        bestanden["manifest.json"] = uitvoer.bouw_manifest(
+            runs, sleutel_naar_run(sleutel, publicatie),
+            {m: f"isobaren/{pad}" for m, pad in isobaren_mappen.items()}, nu)
         isobaar_bestanden = {
-            f"{cfg.CDN_MAP_RUNS}/{publicatie}/{m}/isobaren/{stap:03d}.json": fc
-            for m, per_stap in isobaren_per_model.items() for stap, fc in per_stap.items()
+            f"{cfg.CDN_MAP_ISOBAREN}/{isobaren_mappen[m]}/{stap:03d}.json": fc
+            for m, per_stap in isobaren_per_model.items()
+            if (m, uitvoer.run_code(runs[m])) not in self.isobaren_geupload
+            for stap, fc in per_stap.items()
         }
 
         self._publiceer(publicatie, bestanden, isobaar_bestanden)
+        if not self.droog:
+            self.isobaren_geupload |= {(m, uitvoer.run_code(r)) for m, r in runs.items()}
 
         toestand.update({
             "laatste_sleutel": sleutel,
@@ -239,6 +256,7 @@ class StormWorker:
 
         if not self.droog:
             self._ruim_runs_op(nu)
+            self._ruim_isobaren_op(nu)
 
     # -- publiceren -----------------------------------------------------------
     def _publiceer(self, publicatie: str, bestanden: dict[str, dict], isobaar_bestanden: dict[str, dict]) -> None:
@@ -266,6 +284,28 @@ class StormWorker:
         for naam in volgorde:
             bunny.upload_json(f"{cfg.CDN_MAP_LATEST}/{naam}", bestanden[naam])
         bunny.purge([f"{cfg.CDN_MAP_LATEST}/{naam}" for naam in volgorde])
+
+    def _ruim_isobaren_op(self, nu: datetime) -> None:
+        """Isobaren van een oudere uitvoerversie, en modelruns ouder dan BEWAARDAGEN, verwijderen."""
+        grens = uitvoer.run_code(nu - timedelta(days=cfg.BEWAARDAGEN))
+        try:
+            for versie in bunny.lijst_map(cfg.CDN_MAP_ISOBAREN):
+                naam = versie.get("ObjectName", "")
+                if not versie.get("IsDirectory"):
+                    continue
+                if naam != f"v{UITVOER_VERSIE}":
+                    bunny.verwijder_map(f"{cfg.CDN_MAP_ISOBAREN}/{naam}")
+                    log.info(f"Isobaren van uitvoerversie {naam} van de CDN verwijderd")
+                    continue
+                for model in bunny.lijst_map(f"{cfg.CDN_MAP_ISOBAREN}/{naam}"):
+                    pad_model = f"{cfg.CDN_MAP_ISOBAREN}/{naam}/{model.get('ObjectName', '')}"
+                    for run in bunny.lijst_map(pad_model):
+                        r = run.get("ObjectName", "")
+                        if run.get("IsDirectory") and len(r) == 10 and r.isdigit() and r < grens:
+                            bunny.verwijder_map(f"{pad_model}/{r}")
+                            log.info(f"Oude isobaren {pad_model}/{r} van de CDN verwijderd")
+        except Exception as e:
+            log.warning(f"Opruimen van oude isobaren mislukt (volgende ronde opnieuw): {e}")
 
     def _ruim_runs_op(self, nu: datetime) -> None:
         grens = uitvoer.run_code(nu - timedelta(days=cfg.BEWAARDAGEN))

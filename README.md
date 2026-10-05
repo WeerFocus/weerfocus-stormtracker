@@ -50,7 +50,12 @@ synoptiek/storms/latest/history.json
 synoptiek/storms/latest/gfs/tracks.json
 synoptiek/storms/latest/ifs/tracks.json
 synoptiek/storms/runs/{JJJJMMDDUU}/…      # zelfde bestanden, 7 dagen bewaard
+synoptiek/storms/isobaren/v{versie}/{model}/{JJJJMMDDUU}/{lead_h:03d}.json   # per modelrun, 7 dagen
 ```
+Isobaren: elke 4 hPa voor 100° W–80° O, 15° N–85° N (`ISOBAREN_DOMEIN`, ruimer dan de tracking),
+niet boven terrein hoger dan 1500 m (`STORM_ISOBAREN_OROGRAFIE_MAX_M`). Hun paden zijn onveranderlijk
+per model en modelrun, omdat de pull zone de querystring negeert en alleen `latest/` gepurged wordt.
+`manifest.models[].isobaren` wijst naar de map. ~40–45 kB per stap.
 `synoptiek/latest/` (de oude analyse) wordt niet aangeraakt. Volgorde van publiceren: eerst de
 isobaren en alles naar `runs/{run}/`, dan naar `latest/`, met `manifest.json` steeds als laatste;
 daarna wordt de edge-cache van `latest/` gepurged. Mislukt één
